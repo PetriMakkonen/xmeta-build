@@ -1,0 +1,591 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="6.0.0"
+XMETA_HOME="${XMETA_HOME:-$HOME/bin/.xmeta}"
+STYLES_DIR="${XMETA_STYLES_DIR:-$XMETA_HOME/styles}"
+DEFAULT_CSL="${XMETA_DEFAULT_CSL:-ieee.csl}"
+DEFAULT_BIB="${XMETA_DEFAULT_BIB:-refs.bib}"
+PDF_ENGINE="${XMETA_PDF_ENGINE:-xelatex}"
+XMEETA_EDITOR="${XMEETA_EDITOR:-${XMETA_EDITOR:-${EDITOR:-nano}}}"
+
+say(){ printf '%s\n' "$*"; }
+die(){ printf 'Virhe: %s\n' "$*" >&2; exit 1; }
+need(){ command -v "$1" >/dev/null 2>&1 || die "komento puuttuu: $1"; }
+
+help_fi(){
+cat <<EOF2
+xmeta-build v${VERSION} — XmetaDoc tuotantolaite
+
+Ajatus:
+  - yksi lähde: paper.md
+  - paljas markdown -> paperiin ja beameriin
+  - %-alkuinen rivi -> vain beameriin
+  - %%-alkuinen rivi -> kommentti, ei minnekään
+  - YAML-frontmatter ohjaa sekä paperia että beameria
+
+Komennot:
+  xmeta-build help
+  xmeta-build version
+  xmeta-build init [paper.md]
+  xmeta-build paper <paper.md>
+  xmeta-build slides <paper.md>
+  xmeta-build build <paper.md>
+  xmeta-build long <paper.md>
+  xmeta-build clean <paper.md>
+  xmeta-build install-styles
+
+Ympäristö:
+  XMEETA_EDITOR / XMETA_EDITOR / EDITOR   editori init-komennolle
+  XMETA_HOME                              oletus: ~/bin/.xmeta
+  XMETA_STYLES_DIR                        oletus: \\$XMETA_HOME/styles
+  XMETA_DEFAULT_CSL                       oletus: ieee.csl
+  XMETA_DEFAULT_BIB                       oletus: refs.bib
+  XMETA_PDF_ENGINE                        oletus: xelatex
+
+Piilotiedostot:
+  paper.md -> .paper.long.md, .paper.slides.md, .paper.assets/, .paper.meta.env
+  Lopputulos: paper.pdf ja paper-slides.pdf
+
+YAML-avainet (valinnaiset):
+  title, subtitle, author(name/org), date, lang, keywords, abstract
+  toc, number-sections, toc-own-page
+  bibliography, csl, reference-section-title, link-citations
+
+Viitteet:
+  bibliography: refs.bib
+  csl: ieee.csl
+  reference-section-title: "Lähteet"
+  link-citations: true
+
+DOT/CSV:
+  ```dot ... ```  -> renderöidään kuvaksi
+  ```csv ... ```  -> renderöidään LaTeX-taulukoksi
+  Kuva ja taulukko pakotetaan \columnwidth-rajaan.
+EOF2
+}
+
+install_styles(){
+  need curl
+  mkdir -p "$STYLES_DIR"
+  curl -fsSL "https://raw.githubusercontent.com/citation-style-language/styles/master/ieee.csl" -o "$STYLES_DIR/ieee.csl"
+  say "OK: $STYLES_DIR/ieee.csl"
+}
+
+base_info(){
+  local in="$1" dir base stem
+  [[ -f "$in" ]] || die "tiedostoa ei löydy: $in"
+  dir="$(cd "$(dirname "$in")" && pwd)"
+  base="$(basename "$in")"
+  stem="${base%.md}"
+  printf '%s\n%s\n%s\n' "$dir" "$base" "$stem"
+}
+
+clean_artifacts(){
+  local in="$1"
+  readarray -t bi < <(base_info "$in")
+  local dir="${bi[0]}" stem="${bi[2]}"
+  rm -f "$dir/.$stem.long.md" "$dir/.$stem.slides.md" "$dir/.$stem.meta.env"
+  rm -rf "$dir/.$stem.assets"
+}
+
+init_doc(){
+  local out="${1:-paper.md}"
+  if [[ -e "$out" ]]; then die "tiedosto on jo olemassa: $out"; fi
+  cat > "$out" <<'EOF2'
+---
+title: "Otsikko tähän"
+subtitle: "Valinnainen alaotsikko"
+author:
+  - name: "Kirjoittaja 1"
+    org: "Organisaatio 1"
+  - name: "Kirjoittaja 2"
+    org: "Organisaatio 2"
+date: "2026-03-21"
+lang: fi
+keywords:
+  - scitex
+  - tutkimus
+  - xmeta
+abstract: |
+  Kirjoita tähän 5-10 rivin tiivistelmä. Tämä on normaalia julkaistavaa
+  metatietoa, joka päätyy paperiin.
+toc: true
+number-sections: true
+toc-own-page: true
+bibliography: refs.bib
+csl: ieee.csl
+reference-section-title: "Lähteet"
+link-citations: true
+---
+
+%% XmetaDoc mini-template
+%%
+%% JULKAISTAVA:
+%% - Paljas markdown menee paperiin ja beameriin.
+%% - %-alkuiset rivit menevät vain beameriin.
+%% - %%-alkuiset rivit ovat kommentteja eivätkä mene minnekään.
+%%
+%% Markdown-opas:
+%% https://www.markdownguide.org/basic-syntax/
+
+# Johdanto
+
+Kirjoita tähän työn tausta, ongelma ja motivaatio.
+
+# Aineisto ja menetelmät
+
+Kuvaa aineisto, menetelmä, oletukset ja työkalut.
+
+```dot
+digraph G {
+  rankdir=TD;
+  node [shape=box];
+  Kysymys -> Menetelma;
+  Menetelma -> Tulokset;
+  Tulokset -> Johtopaatokset;
+}
+```
+
+```csv
+muuttuja,arvo,yksikko
+pituus,12.4,m
+massa,85,kg
+teho,3.2,kW
+```
+
+# Tulokset
+
+Kirjoita tähän tulokset.
+
+# Pohdintaa
+
+Kirjoita tähän arvio tulosten merkityksestä, epävarmuuksista ja jatkotyöstä.
+
+%# Esityskalvoihin tiivistetty otsikko
+%* Ensimmäinen bullet vain beameriin
+%* Toinen bullet vain beameriin
+EOF2
+  say "OK: $out"
+  command -v "$XMEETA_EDITOR" >/dev/null 2>&1 && "$XMEETA_EDITOR" "$out" >/dev/null 2>&1 & disown || true
+}
+
+preprocess(){
+  local mode="$1" in="$2" out="$3" assets="$4" metaenv="$5"
+  mkdir -p "$assets"
+  python3 - "$mode" "$in" "$out" "$assets" "$metaenv" <<'PY'
+import csv, io, os, re, sys, subprocess
+from pathlib import Path
+
+mode, in_path, out_path, assets_dir, metaenv = sys.argv[1:6]
+text = Path(in_path).read_text(encoding='utf-8')
+assets = Path(assets_dir)
+assets.mkdir(parents=True, exist_ok=True)
+
+# ---------- frontmatter ----------
+fm = ""
+body = text
+if text.startswith('---\n'):
+    end = text.find('\n---\n', 4)
+    if end != -1:
+        fm = text[4:end]
+        body = text[end+5:]
+
+# top-level scalar parser, no YAML dependency for control bits
+scalars = {}
+for line in fm.splitlines():
+    if not line.strip():
+        continue
+    if line[:1].isspace():
+        continue
+    if line.lstrip().startswith('#'):
+        continue
+    if ':' not in line:
+        continue
+    k, v = line.split(':', 1)
+    scalars[k.strip()] = v.strip().strip('"').strip("'")
+
+def as_bool(key: str) -> int:
+    v = scalars.get(key, '').strip().lower()
+    return 1 if v in ('1','true','yes','on','y') else 0
+
+def scalar(key: str) -> str:
+    return scalars.get(key, '').strip().strip('"').strip("'")
+
+# minimal author parser from expected YAML subset
+# captures:
+# author:
+#   - name: "..."
+#     org: "..."
+authors = []
+in_author = False
+current = None
+for raw in fm.splitlines():
+    if raw.startswith('author:'):
+        in_author = True
+        current = None
+        continue
+    if in_author:
+        if raw and not raw[:1].isspace() and not raw.lstrip().startswith('-'):
+            if current:
+                authors.append(current)
+            in_author = False
+            current = None
+        else:
+            stripped = raw.strip()
+            if stripped.startswith('- '):
+                if current:
+                    authors.append(current)
+                current = {'name':'','org':''}
+                rest = stripped[2:]
+                if rest.startswith('name:'):
+                    current['name'] = rest.split(':',1)[1].strip().strip('"').strip("'")
+            elif current is not None and stripped.startswith('name:'):
+                current['name'] = stripped.split(':',1)[1].strip().strip('"').strip("'")
+            elif current is not None and stripped.startswith('org:'):
+                current['org'] = stripped.split(':',1)[1].strip().strip('"').strip("'")
+if in_author and current:
+    authors.append(current)
+
+# metadata env file
+meta = {
+    'TOC': str(as_bool('toc')),
+    'NUMBER_SECTIONS': str(as_bool('number-sections')),
+    'TOC_OWN_PAGE': str(as_bool('toc-own-page')),
+    'BIBLIOGRAPHY': scalar('bibliography'),
+    'CSL': scalar('csl'),
+    'REFERENCE_SECTION_TITLE': scalar('reference-section-title'),
+    'LINK_CITATIONS': str(as_bool('link-citations')),
+    'TITLE': scalar('title'),
+    'SUBTITLE': scalar('subtitle'),
+    'DATE': scalar('date'),
+    'LANG': scalar('lang'),
+}
+with open(metaenv, 'w', encoding='utf-8') as f:
+    for k, v in meta.items():
+        f.write(f'{k}={v}\n')
+
+# ---------- helpers ----------
+attr_re = re.compile(r'^```(?:\{[^}]*\.(dot|csv)[^}]*\}|(dot|csv))(.*)$', re.I)
+
+def csv_to_latex_table(csv_text:str)->str:
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        return ''
+    ncol = max(len(r) for r in rows)
+    rows = [r + ['']*(ncol-len(r)) for r in rows]
+    def esc(s):
+        s = str(s)
+        repl = {
+            '&':'\\&','%':'\\%','$':'\\$','#':'\\#','_':'\\_','{':'\\{','}':'\\}','~':'\\textasciitilde{}','^':'\\textasciicircum{}','\\':'\\textbackslash{}'
+        }
+        return ''.join(repl.get(ch,ch) for ch in s)
+    aligns = 'l' * ncol
+    lines = []
+    lines.append('```{=latex}')
+    lines.append('\\begin{table}[htbp]')
+    lines.append('\\centering')
+    lines.append('\\resizebox{\\columnwidth}{!}{%')
+    lines.append(f'\\begin{{tabular}}{{|{ "|".join("l" for _ in range(ncol)) }|}}')
+    lines.append('\\hline')
+    header = ' & '.join(esc(x) for x in rows[0]) + r' \\'
+    lines.append(header)
+    lines.append('\\hline')
+    for r in rows[1:]:
+        lines.append(' & '.join(esc(x) for x in r) + r' \\')
+    lines.append('\\hline')
+    lines.append('\\end{tabular}%')
+    lines.append('}')
+    lines.append('\\end{table}')
+    lines.append('```')
+    return '\n'.join(lines)
+
+# ---------- body transform ----------
+out_lines = []
+in_fence = False
+fence_lang = None
+fence_buf = []
+dot_i = 0
+csv_i = 0
+
+for raw in body.splitlines():
+    if not in_fence:
+        m = attr_re.match(raw)
+        if m:
+            in_fence = True
+            fence_lang = (m.group(1) or m.group(2) or '').lower()
+            fence_buf = []
+            continue
+        if raw.startswith('%%'):
+            continue
+        if raw.startswith('%'):
+            if mode == 'slides':
+                out_lines.append(raw[1:])
+            continue
+        out_lines.append(raw)
+    else:
+        if raw.startswith('```'):
+            if fence_lang == 'dot':
+                dot_i += 1
+                dot_src = assets / f'dot-{dot_i:03d}.dot'
+                dot_pdf = assets / f'dot-{dot_i:03d}.pdf'
+                dot_src.write_text('\n'.join(fence_buf)+'\n', encoding='utf-8')
+                try:
+                    subprocess.run(['dot','-Tpdf',str(dot_src),'-o',str(dot_pdf)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    out_lines += [
+                        '```{=latex}',
+                        '\\begin{figure}[htbp]',
+                        '\\centering',
+                        f'\\includegraphics[width=\\columnwidth,height=0.78\\textheight,keepaspectratio]{{{dot_pdf.as_posix()}}}',
+                        '\\end{figure}',
+                        '```'
+                    ]
+                except Exception as e:
+                    out_lines.append('```text')
+                    out_lines.append(f'[DOT render failed: {e}]')
+                    out_lines.extend(fence_buf)
+                    out_lines.append('```')
+            elif fence_lang == 'csv':
+                csv_i += 1
+                out_lines.append(csv_to_latex_table('\n'.join(fence_buf)))
+            else:
+                out_lines.append(f'```{fence_lang}')
+                out_lines.extend(fence_buf)
+                out_lines.append('```')
+            in_fence = False
+            fence_lang = None
+            fence_buf = []
+        else:
+            fence_buf.append(raw)
+
+# if unclosed fence, keep as-is
+if in_fence:
+    out_lines.append(f'```{fence_lang or ""}')
+    out_lines.extend(fence_buf)
+
+Path(out_path).write_text((('---\n'+fm+'\n---\n\n') if fm else '') + '\n'.join(out_lines) + '\n', encoding='utf-8')
+print(f'META: toc={meta["TOC"]} number-sections={meta["NUMBER_SECTIONS"]} toc-own-page={meta["TOC_OWN_PAGE"]} bibliography={meta["BIBLIOGRAPHY"]} csl={meta["CSL"]}')
+PY
+}
+
+build_headers(){
+  local mode="$1" envfile="$2" headerfile="$3"
+  python3 - "$mode" "$envfile" "$headerfile" <<'PY'
+import sys
+from pathlib import Path
+mode, envfile, headerfile = sys.argv[1:4]
+vals = {}
+for line in Path(envfile).read_text(encoding='utf-8').splitlines():
+    if '=' in line:
+        k,v = line.split('=',1)
+        vals[k]=v
+
+def esc(s:str)->str:
+    repl = {'&':'\\&','%':'\\%','$':'\\$','#':'\\#','_':'\\_','{':'\\{','}':'\\}','~':'\\textasciitilde{}','^':'\\textasciicircum{}'}
+    return ''.join(repl.get(ch,ch) for ch in s)
+
+# read authors from original source not env; env doesn't store them
+# we'll leave this to pandoc metadata if no custom title data injected.
+tex=[]
+tex.append('\\usepackage{graphicx}')
+if mode == 'paper' and vals.get('TOC_OWN_PAGE') == '1' and vals.get('TOC') == '1':
+    tex += [
+      '\\let\\xmetaoldtableofcontents\\tableofcontents',
+      '\\renewcommand{\\tableofcontents}{\\xmetaoldtableofcontents\\clearpage}'
+    ]
+Path(headerfile).write_text('\n'.join(tex)+'\n', encoding='utf-8')
+PY
+}
+
+
+load_meta_env(){
+  local envf="$1"
+  TOC=0; NUMBER_SECTIONS=0; TOC_OWN_PAGE=0; BIBLIOGRAPHY=""; CSL=""; REFERENCE_SECTION_TITLE=""; LINK_CITATIONS=0
+  while IFS='=' read -r k v; do
+    case "$k" in
+      TOC) TOC="$v" ;;
+      NUMBER_SECTIONS) NUMBER_SECTIONS="$v" ;;
+      TOC_OWN_PAGE) TOC_OWN_PAGE="$v" ;;
+      BIBLIOGRAPHY) BIBLIOGRAPHY="$v" ;;
+      CSL) CSL="$v" ;;
+      REFERENCE_SECTION_TITLE) REFERENCE_SECTION_TITLE="$v" ;;
+      LINK_CITATIONS) LINK_CITATIONS="$v" ;;
+    esac
+  done < "$envf"
+}
+
+build_title_overrides(){
+  local mode="$1" in="$2" titlejson="$3"
+  python3 - "$mode" "$in" "$titlejson" <<'PY'
+import json, re, sys
+from pathlib import Path
+mode, in_path, out_path = sys.argv[1:4]
+text = Path(in_path).read_text(encoding='utf-8')
+fm = ''
+if text.startswith('---\n'):
+    end = text.find('\n---\n', 4)
+    if end != -1:
+        fm = text[4:end]
+scalars = {}
+for line in fm.splitlines():
+    if not line.strip() or line[:1].isspace() or line.lstrip().startswith('#') or ':' not in line:
+        continue
+    k,v = line.split(':',1)
+    scalars[k.strip()] = v.strip().strip('"').strip("'")
+authors=[]
+in_author=False
+current=None
+for raw in fm.splitlines():
+    if raw.startswith('author:'):
+        in_author=True; current=None; continue
+    if in_author:
+        if raw and not raw[:1].isspace() and not raw.lstrip().startswith('-'):
+            if current: authors.append(current)
+            in_author=False; current=None
+        else:
+            s=raw.strip()
+            if s.startswith('- '):
+                if current: authors.append(current)
+                current={'name':'','org':''}
+                rest=s[2:]
+                if rest.startswith('name:'): current['name']=rest.split(':',1)[1].strip().strip('"').strip("'")
+            elif current is not None and s.startswith('name:'):
+                current['name']=s.split(':',1)[1].strip().strip('"').strip("'")
+            elif current is not None and s.startswith('org:'):
+                current['org']=s.split(':',1)[1].strip().strip('"').strip("'")
+if in_author and current: authors.append(current)
+if not authors and scalars.get('author'):
+    authors=[{'name':scalars.get('author',''),'org':''}]
+obj={'title':scalars.get('title',''),'subtitle':scalars.get('subtitle',''),'date':scalars.get('date',''),'authors':authors}
+Path(out_path).write_text(json.dumps(obj), encoding='utf-8')
+PY
+}
+
+paper(){
+  local in="$1"; need pandoc; need python3
+  readarray -t bi < <(base_info "$in")
+  local dir="${bi[0]}" stem="${bi[2]}"
+  local long="$dir/.$stem.long.md" assets="$dir/.$stem.assets" envf="$dir/.$stem.meta.env"
+  local header="$dir/.$stem.paper.header.tex" titlej="$dir/.$stem.title.json"
+  rm -f "$long" "$envf" "$header" "$titlej"
+  rm -rf "$assets"
+  preprocess paper "$in" "$long" "$assets" "$envf"
+  build_headers paper "$envf" "$header"
+  build_title_overrides paper "$in" "$titlej"
+
+  load_meta_env "$envf"
+  local out="$dir/$stem.pdf"
+  local -a args=("$long" --standalone --pdf-engine="$PDF_ENGINE" -H "$header" -o "$out")
+  [[ "${TOC:-0}" == "1" ]] && args+=(--toc)
+  [[ "${NUMBER_SECTIONS:-0}" == "1" ]] && args+=(--number-sections)
+  local bib="${BIBLIOGRAPHY:-}" csl="${CSL:-}"
+  [[ -z "$bib" && -f "$dir/$DEFAULT_BIB" ]] && bib="$dir/$DEFAULT_BIB"
+  if [[ -n "$bib" && -f "$bib" ]]; then
+    args+=(--citeproc --bibliography="$bib")
+    if [[ -n "$csl" && -f "$dir/$csl" ]]; then args+=(--csl="$dir/$csl")
+    elif [[ -n "$csl" && -f "$STYLES_DIR/$csl" ]]; then args+=(--csl="$STYLES_DIR/$csl")
+    elif [[ -z "$csl" && -f "$STYLES_DIR/$DEFAULT_CSL" ]]; then args+=(--csl="$STYLES_DIR/$DEFAULT_CSL")
+    elif [[ -z "$csl" && -f "$dir/$DEFAULT_CSL" ]]; then args+=(--csl="$dir/$DEFAULT_CSL")
+    fi
+  fi
+  # custom author/date overrides via pandoc variables to avoid visible backslashes
+  python3 - "$titlej" <<'PY' > "$dir/.$stem.paper.vars"
+import json, sys
+from pathlib import Path
+obj=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+auths=obj.get('authors',[])
+if auths:
+    parts=[]
+    for a in auths:
+        s=a.get('name','')
+        if a.get('org'): s += r'\\' + a['org']
+        parts.append(s)
+    print('AUTHOR=' + r'\and '.join(parts))
+print('DATE=' + obj.get('date',''))
+PY
+  AUTHOR=""; DATE=""
+  while IFS='=' read -r k v; do
+    case "$k" in AUTHOR) AUTHOR="$v" ;; DATE) DATE="$v" ;; esac
+  done < "$dir/.$stem.paper.vars"
+  [[ -n "${AUTHOR:-}" ]] && args+=(-V "author=$AUTHOR")
+  [[ -n "${DATE:-}" ]] && args+=(-V "date=$DATE")
+  pandoc "${args[@]}"
+  rm -f "$header" "$titlej" "$dir/.$stem.paper.vars"
+  say "OK: $out"
+}
+
+slides(){
+  local in="$1"; need pandoc; need python3
+  readarray -t bi < <(base_info "$in")
+  local dir="${bi[0]}" stem="${bi[2]}"
+  local slidesmd="$dir/.$stem.slides.md" assets="$dir/.$stem.assets" envf="$dir/.$stem.meta.env"
+  local header="$dir/.$stem.slides.header.tex" titlej="$dir/.$stem.title.json"
+  rm -f "$slidesmd" "$envf" "$header" "$titlej"
+  rm -rf "$assets"
+  preprocess slides "$in" "$slidesmd" "$assets" "$envf"
+  build_headers slides "$envf" "$header"
+  build_title_overrides slides "$in" "$titlej"
+
+  load_meta_env "$envf"
+  local out="$dir/$stem-slides.pdf"
+  local -a args=("$slidesmd" -t beamer --standalone --pdf-engine="$PDF_ENGINE" -H "$header" -o "$out")
+  local bib="${BIBLIOGRAPHY:-}" csl="${CSL:-}"
+  [[ -z "$bib" && -f "$dir/$DEFAULT_BIB" ]] && bib="$dir/$DEFAULT_BIB"
+  if [[ -n "$bib" && -f "$bib" ]]; then
+    args+=(--citeproc --bibliography="$bib")
+    if [[ -n "$csl" && -f "$dir/$csl" ]]; then args+=(--csl="$dir/$csl")
+    elif [[ -n "$csl" && -f "$STYLES_DIR/$csl" ]]; then args+=(--csl="$STYLES_DIR/$csl")
+    elif [[ -z "$csl" && -f "$STYLES_DIR/$DEFAULT_CSL" ]]; then args+=(--csl="$STYLES_DIR/$DEFAULT_CSL")
+    elif [[ -z "$csl" && -f "$dir/$DEFAULT_CSL" ]]; then args+=(--csl="$dir/$DEFAULT_CSL")
+    fi
+  fi
+  python3 - "$titlej" <<'PY' > "$dir/.$stem.slides.vars"
+import json, sys
+from pathlib import Path
+obj=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+auths=obj.get('authors',[])
+if auths:
+    names=[a.get('name','') for a in auths if a.get('name')]
+    orgs=[a.get('org','') for a in auths if a.get('org')]
+    print('AUTHOR=' + ' \\and '.join(names))
+    if orgs:
+        print('INSTITUTE=' + ' \\and '.join(orgs))
+print('DATE=' + obj.get('date',''))
+PY
+  AUTHOR=""; INSTITUTE=""; DATE=""
+  while IFS='=' read -r k v; do
+    case "$k" in AUTHOR) AUTHOR="$v" ;; INSTITUTE) INSTITUTE="$v" ;; DATE) DATE="$v" ;; esac
+  done < "$dir/.$stem.slides.vars"
+  [[ -n "${AUTHOR:-}" ]] && args+=(-V "author=$AUTHOR")
+  [[ -n "${INSTITUTE:-}" ]] && args+=(-V "institute=$INSTITUTE")
+  [[ -n "${DATE:-}" ]] && args+=(-V "date=$DATE")
+  pandoc "${args[@]}"
+  rm -f "$header" "$titlej" "$dir/.$stem.slides.vars"
+  say "OK: $out"
+}
+
+long_cmd(){
+  local in="$1"
+  readarray -t bi < <(base_info "$in")
+  local dir="${bi[0]}" stem="${bi[2]}"
+  local long="$dir/.$stem.long.md" assets="$dir/.$stem.assets" envf="$dir/.$stem.meta.env"
+  rm -f "$long" "$envf"; rm -rf "$assets"
+  preprocess paper "$in" "$long" "$assets" "$envf"
+  say "OK: $long"
+}
+
+build_all(){ paper "$1"; slides "$1"; }
+
+cmd="${1:-help}"
+case "$cmd" in
+  help|-h|--help) help_fi ;;
+  version) say "$VERSION" ;;
+  install-styles) install_styles ;;
+  init) shift; init_doc "${1:-paper.md}" ;;
+  clean) shift; clean_artifacts "${1:?Anna .md tiedosto}" ;;
+  long) shift; long_cmd "${1:?Anna .md tiedosto}" ;;
+  paper) shift; paper "${1:?Anna .md tiedosto}" ;;
+  slides) shift; slides "${1:?Anna .md tiedosto}" ;;
+  build) shift; build_all "${1:?Anna .md tiedosto}" ;;
+  *) die "tuntematon komento: $cmd" ;;
+esac
