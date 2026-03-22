@@ -1,0 +1,20 @@
+# Build outputs
+*.pdf
+*-slides.pdf
+
+# xmeta-build hidden intermediates
+.*.long.md
+.*.slides.md
+.*.rendered.md
+.*.meta.md
+.*.meta.env
+.*.header.tex
+
+# Rendered asset directories
+.*.assets/
+
+# Editor / OS noise
+*~
+*.swp
+*.swo
+.DS_Store
